@@ -10,6 +10,7 @@ import com.microsoft.azure.common.exceptions.AzureExecutionException;
 import com.microsoft.azure.common.prompt.DefaultPrompter;
 import com.microsoft.azure.common.prompt.IPrompter;
 import com.microsoft.azure.common.utils.TextUtils;
+import com.microsoft.azure.management.appplatform.v2020_07_01.AppResourceProperties;
 import com.microsoft.azure.management.appplatform.v2020_07_01.DeploymentInstance;
 import com.microsoft.azure.management.appplatform.v2020_07_01.DeploymentResourceStatus;
 import com.microsoft.azure.management.appplatform.v2020_07_01.PersistentDisk;
@@ -22,7 +23,6 @@ import com.microsoft.azure.maven.spring.configuration.SpringConfiguration;
 import com.microsoft.azure.maven.spring.spring.SpringAppClient;
 import com.microsoft.azure.maven.spring.spring.SpringDeploymentClient;
 import com.microsoft.azure.maven.spring.utils.Utils;
-
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -37,10 +37,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
-import static com.microsoft.azure.maven.spring.TelemetryConstants.TELEMETRY_KEY_IS_CREATE_DEPLOYMENT;
-import static com.microsoft.azure.maven.spring.TelemetryConstants.TELEMETRY_KEY_IS_CREATE_NEW_APP;
-import static com.microsoft.azure.maven.spring.TelemetryConstants.TELEMETRY_KEY_IS_DEPLOYMENT_NAME_GIVEN;
+import static com.microsoft.azure.maven.spring.TelemetryConstants.*;
 
 @Mojo(name = "deploy")
 public class DeployMojo extends AbstractSpringMojo {
@@ -97,32 +96,60 @@ public class DeployMojo extends AbstractSpringMojo {
         }
         // Prepare telemetries
         traceTelemetry(springAppClient, deploymentClient, configuration);
-        // Create or update new App
+
+        // Create new App if not exist
         getLog().info(STATUS_CREATE_OR_UPDATE_APP);
-        final boolean isNewSpringCloudApp = springAppClient.getApp() == null;
-        final AppResourceInner appResourceInner = springAppClient.createOrUpdateApp(configuration);
-        final PersistentDisk persistentDisk = appResourceInner.properties().persistentDisk();
-        if (persistentDisk != null) {
-            getLog().info(String.format(DEPLOYMENT_STORAGE_STATUS, persistentDisk.mountPath(), persistentDisk.sizeInGB()));
-        }
+        final AppResourceInner app = createAppIfNotExist(configuration, springAppClient);
         getLog().info(STATUS_CREATE_OR_UPDATE_APP_DONE);
+
         // Upload artifact
         getLog().info(STATUS_UPLOADING_ARTIFACTS);
-        final File toDeploy = isResourceSpecified(configuration) ? Utils.getArtifactFromConfiguration(configuration) :
-                Utils.getArtifactFromTargetFolder(project);
-        final ResourceUploadDefinitionInner uploadDefinition = springAppClient.uploadArtifact(toDeploy);
+        // TODO: no need to re-upload if artifact is not changed
+        final ResourceUploadDefinitionInner uploadDefinition = uploadArtifact(configuration, springAppClient);
         getLog().info(STATUS_UPLOADING_ARTIFACTS_DONE);
+
+        final AppResourceProperties newProperties = app.properties();
+        SpringAppClient.mergeConfigurationIntoProperties(configuration, newProperties);
+
         // Create or update deployment
         getLog().info(STATUS_CREATE_OR_UPDATE_DEPLOYMENT);
-        deploymentClient.createOrUpdateDeployment(deploymentConfiguration, uploadDefinition);
-        if (isNewSpringCloudApp) {
-            // Some app level parameters need to be specified after its deployment was created
-            springAppClient.createOrUpdateApp(configuration);
+        DeploymentResourceInner deployment = deploymentClient.getDeployment();
+        if (Objects.isNull(deployment)) {
+            deployment = deploymentClient.createDeployment(deploymentConfiguration, uploadDefinition);
+            final String activeDeploymentName = app.properties().activeDeploymentName();
+            if (StringUtils.isEmpty(activeDeploymentName)) {
+                newProperties.withActiveDeploymentName(deployment.name());
+            }
+        } else {
+            // TODO: no need to update if configuration is not changed
+            deploymentClient.updateDeployment(deployment, deploymentConfiguration, uploadDefinition);
         }
+
+        // TODO: no need to update if properties is not changed
+        springAppClient.updateApp(app, newProperties);
+
         getLog().info(STATUS_CREATE_OR_UPDATE_DEPLOYMENT_DONE);
         // Showing deployment status and public url
         showDeploymentStatus(deploymentClient);
         showPublicUrl(springAppClient);
+    }
+
+    private AppResourceInner createAppIfNotExist(SpringConfiguration configuration, SpringAppClient springAppClient) {
+        AppResourceInner app = springAppClient.getApp();
+        if (Objects.isNull(app)) {
+            app = springAppClient.createApp(configuration);
+        }
+        final PersistentDisk persistentDisk = app.properties().persistentDisk();
+        if (persistentDisk != null) {
+            getLog().info(String.format(DEPLOYMENT_STORAGE_STATUS, persistentDisk.mountPath(), persistentDisk.sizeInGB()));
+        }
+        return app;
+    }
+
+    private ResourceUploadDefinitionInner uploadArtifact(SpringConfiguration configuration, SpringAppClient springAppClient) throws MojoExecutionException {
+        final File toDeploy = isResourceSpecified(configuration) ? Utils.getArtifactFromConfiguration(configuration) :
+                Utils.getArtifactFromTargetFolder(project);
+        return springAppClient.uploadArtifact(toDeploy);
     }
 
     protected void showPublicUrl(SpringAppClient springAppClient) throws MojoExecutionException {

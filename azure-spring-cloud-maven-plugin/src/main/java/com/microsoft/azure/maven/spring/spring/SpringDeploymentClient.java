@@ -8,25 +8,16 @@ package com.microsoft.azure.maven.spring.spring;
 
 import com.microsoft.azure.common.exceptions.AzureExecutionException;
 import com.microsoft.azure.common.logging.Log;
-import com.microsoft.azure.management.appplatform.v2020_07_01.DeploymentResourceProperties;
-import com.microsoft.azure.management.appplatform.v2020_07_01.DeploymentResourceProvisioningState;
-import com.microsoft.azure.management.appplatform.v2020_07_01.DeploymentSettings;
-import com.microsoft.azure.management.appplatform.v2020_07_01.RuntimeVersion;
-import com.microsoft.azure.management.appplatform.v2020_07_01.UserSourceInfo;
-import com.microsoft.azure.management.appplatform.v2020_07_01.UserSourceType;
+import com.microsoft.azure.management.appplatform.v2020_07_01.*;
 import com.microsoft.azure.management.appplatform.v2020_07_01.implementation.DeploymentResourceInner;
+import com.microsoft.azure.management.appplatform.v2020_07_01.implementation.DeploymentsInner;
 import com.microsoft.azure.management.appplatform.v2020_07_01.implementation.ResourceUploadDefinitionInner;
 import com.microsoft.azure.management.appplatform.v2020_07_01.implementation.SkuInner;
 import com.microsoft.azure.maven.spring.configuration.Deployment;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.Objects;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -79,7 +70,7 @@ public class SpringDeploymentClient extends AbstractSpringClient {
     public DeploymentResourceInner createOrUpdateDeployment(Deployment configuration, ResourceUploadDefinitionInner resource) throws AzureExecutionException {
         final DeploymentResourceInner deployment = getDeployment();
         return deployment == null ? createDeployment(configuration, resource) :
-                updateDeployment(configuration, deployment, resource);
+                updateDeployment(deployment, configuration, resource);
     }
 
     public DeploymentResourceInner getDeployment() {
@@ -94,7 +85,7 @@ public class SpringDeploymentClient extends AbstractSpringClient {
         return deploymentName;
     }
 
-    private DeploymentResourceInner createDeployment(Deployment deploymentConfiguration, ResourceUploadDefinitionInner resource) {
+    public DeploymentResourceInner createDeployment(Deployment deploymentConfiguration, ResourceUploadDefinitionInner resource) {
         final DeploymentResourceProperties deploymentProperties = new DeploymentResourceProperties();
         final SkuInner skuInner = this.initDeploymentSku(deploymentConfiguration);
         final DeploymentSettings deploymentSettings = new DeploymentSettings();
@@ -111,17 +102,13 @@ public class SpringDeploymentClient extends AbstractSpringClient {
         final DeploymentResourceInner tempDeploymentResource = new DeploymentResourceInner();
         tempDeploymentResource.withSku(skuInner).withProperties(deploymentProperties);
         // Create deployment
-        final DeploymentResourceInner deployment = springManager.deployments().inner()
-                .createOrUpdate(resourceGroup, clusterName, appName, deploymentName, tempDeploymentResource);
-        springManager.deployments().inner().start(resourceGroup, clusterName, appName, deploymentName);
-        // Active deployment
-        if (StringUtils.isEmpty(springAppClient.getActiveDeploymentName())) {
-            springAppClient.activateDeployment(deployment.name());
-        }
+        final DeploymentsInner inner = springManager.deployments().inner();
+        final DeploymentResourceInner deployment = inner.createOrUpdate(resourceGroup, clusterName, appName, deploymentName, tempDeploymentResource);
+        inner.start(resourceGroup, clusterName, appName, deploymentName);
         return deployment;
     }
 
-    private DeploymentResourceInner updateDeployment(Deployment deploymentConfiguration, DeploymentResourceInner deployment,
+    public DeploymentResourceInner updateDeployment(DeploymentResourceInner deployment, Deployment deploymentConfiguration,
                                                      ResourceUploadDefinitionInner resource) throws AzureExecutionException {
         final DeploymentSettings previousDeploymentSettings = deployment.properties().deploymentSettings();
         if (isResourceScaled(deploymentConfiguration, deployment)) {
